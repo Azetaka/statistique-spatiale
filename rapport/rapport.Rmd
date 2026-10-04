@@ -1,0 +1,479 @@
+---
+title: "Sujet 3 : Analyse spatiale de la performance commerciale ou opérationnelle"
+author: "Uriel FAGNINOU, Baptiste PRETET &  Askhab TAVSIEV"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    keep_tex: true
+    toc: true
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, comment = NA,fig.align = "center")
+getwd()
+setwd("/Users/urielfagninou/Documents/ENSAI/Statistique Spatiale/Projet")
+pacman::p_load(readxl,dplyr,tidyverse,readr,ggplot2,scales,stringr, ggplot2, sf, spdep, tmap, RColorBrewer,stargazer,ggrepel,spatialreg,DiagrammeR,lmtest,GWmodel)
+```
+
+\newpage
+
+# Introduction
+
+L'objectif du projet est d'étudier les différences de dynamisme commercial entre les départements français, en s'appuyant sur un jeu de données comprenant le nombre de créations d'entreprises dans le commerce, la population, le revenu médian, le taux de pauvreté, l'indice de Gini et la structure par âge. Pour comparer des départements de tailles très différentes, on rapporte les créations à la population (créations pour 1 000 habitants), et c'est cet indicateur qui mesure le dynamisme commercial d'un territoire.
+
+L'analyse vise à repérer des tendances géographiques, à identifier les zones où l'activité se concentre ou au contraire s'essouffle, et à comprendre quels facteurs socio-économiques expliquent ces écarts. L'objectif final est de déterminer ce qui rend un territoire plus dynamique qu'un autre, et surtout de montrer que ces écarts ne sont pas répartis au hasard sur la carte mais suivent une logique spatiale.
+
+Pour atteindre cet objectif, le projet se décompose en deux grandes étapes : comprendre et préparer les données, puis modéliser le dynamisme commercial à l'aide des méthodes d'économétrie spatiale (autocorrélation, modèles SAR, SEM, SDM, puis GWR). 
+
+# 1. Construction et préparation de la base de données
+
+On a utilisé quatre fichiers de l'INSEE, tous au niveau des départements de France métropolitaine. Le premier donne le nombre de créations d'entreprises en 2024 (dispositif SIDE). Le deuxième donne la population de chaque département en 2024, avec le détail par tranche d'âge. Les deux derniers viennent du dispositif Filosofi 2021 : l'un contient le revenu médian et l'indice de Gini, l'autre le taux de pauvreté.
+
+## 1.1) Prépartion de la base de données 
+
+On a d'abord récupéré le nombre de créations d'entreprises dans le commerce en 2024, en gardant toutes les formes juridiques confondues. Comme un gros département crée forcément plus d'entreprises qu'un petit, on a divisé ce nombre par la population et multiplié par 1 000 : on obtient le nombre de créations pour 1 000 habitants, ce qui permet de comparer les départements entre eux. On a ensuite ajouté à chaque département ses variables de contexte : le revenu médian, l'indice de Gini (qui mesure les inégalités), le taux de pauvreté et la part de jeunes et de personnes âgées.
+
+Enfin, on a réuni tous ces fichiers en une seule table, en les reliant par le code du département. On a gardé ce code sous forme de texte pour ne pas perdre le zéro de départements comme « 01 » ni les codes de la Corse (« 2A » et « 2B »), et on a retiré les départements d'outre-mer ainsi que les lignes de totaux présentes dans le fichier de population. On obtient au final une table propre de 96 départements, sans données manquantes.
+
+## 1.2) Aperçu de la base de données
+
+La base finale compte **96 départements** sans valeur manquante. On note que revenu médian et taux de pauvreté mesurent tous deux la dimension du niveau de vie Ils sont fortement corrélés et  ne seront pas utilisés simultanément dans la modélisation, afin d'éviter la multicolinéarité. Voici un aperçu de la base finale :
+
+```{r,echo=FALSE,comment=NA,warning=FALSE,include=FALSE}
+F_CREA = "Creation_Entreprise.xlsx"; 
+F_POP = "Population.xlsx"
+F_REV = "DISP_DEP.csv";    
+F_PAUV = "FILO2021_DISP_PAUVRES_DEP.csv"
+
+# 1. Créations d'entreprises du commerce en 2024 (feuille DEP_UL)
+crea = read_excel(F_CREA, sheet = "DEP_UL", skip = 5, col_names = FALSE)
+names(crea) = c("code_dep","nom_dep","activite","forme_legale", paste0("an_", 2012:2024))
+crea = crea |>
+  filter(str_starts(activite, "Commerce"), forme_legale == "Total") |>
+  transmute(code_dep = as.character(code_dep), nom_dep, creations_commerce = an_2024)
+
+# Population 2024 : total + classes d'âge (bloc "Ensemble")
+pop = read_excel(F_POP, sheet = "2024", skip = 5, col_names = FALSE) |>
+  transmute(code_dep = as.character(...1),
+            pop_0_19 = as.numeric(...3), pop_75p = as.numeric(...7),
+            population = as.numeric(...8))
+
+# Filosofi : revenu médian (Q221) + Gini (GI21) 
+rev = read_delim(F_REV, delim = ";", locale = locale(decimal_mark = ","),
+                  col_select = c(CODGEO, Q221, GI21),
+                  col_types = cols(CODGEO = col_character(), Q221 = col_double(), GI21 = col_double())) |>
+  transmute(code_dep = CODGEO, revenu_median = Q221, gini = GI21)
+
+# --- 4. Filosofi : taux de pauvreté 60 % (TP6021) ---
+pauv = read_delim(F_PAUV, delim = ";", locale = locale(decimal_mark = ","),
+                   col_select = c(CODGEO, TP6021),
+                   col_types = cols(CODGEO = col_character(), TP6021 = col_double())) |>
+  transmute(code_dep = CODGEO, taux_pauvrete = TP6021)
+
+# base finale
+base = crea |>
+  full_join(pop, by = "code_dep") |> full_join(rev, by = "code_dep") |>
+  full_join(pauv, by = "code_dep") |>
+  filter(str_detect(code_dep, "^(\\d{2}|2A|2B)$")) |>
+  mutate(taux_creation = 1000 * creations_commerce / population,
+         part_jeunes  = 100 * pop_0_19 / population,
+         part_seniors = 100 * pop_75p  / population) |>
+  select(code_dep, nom_dep, creations_commerce, population, taux_creation,
+         revenu_median, taux_pauvrete, gini, part_jeunes, part_seniors) |>
+  arrange(code_dep)
+
+stopifnot(nrow(base) == 96, all(!is.na(base$taux_creation)))
+```
+
+```{r,echo=FALSE,comment=NA,warning=FALSE}
+head(base[, c("code_dep","nom_dep","taux_creation","revenu_median","taux_pauvrete","gini")], 6)
+```
+
+Il est important de souligner que dans la suite de nos résultats dépendent de notre découpage choisi (Problème des unités spatiales Modifiables MAUP). En travaillant par commune ou par intercommunalité, on pourrait obtenir une image un peu différente. On a choisi le département parce que c'est le bon compromis : à l'échelle de la commune, beaucoup de chiffres sont manquants ou trop instables (surtout dans les petites communes rurales), alors qu'au niveau du département les données sont complètes et fiables. Nos conclusions valent donc à l'échelle départementale.
+
+## 1.3) Statistique descriptive
+
+Pour en apprendre davantage sur notre variable d'intérêt et nos variables explicatives, nous allons procéder à une analyse statistique desctriptive.
+```{r,comment=NA,echo=FALSE,warning=FALSE}
+d = base[, c("taux_creation","revenu_median","taux_pauvrete","gini","part_seniors","part_jeunes")]
+d = data.frame(lapply(d, as.numeric))
+stargazer(d, type = "text", title = "Statistiques descriptives", digits = 2)
+```
+Sur les 96 départements, on crée en moyenne 2 entreprises de commerce pour 1 000 habitants par an, mais l'écart est large : de 1,1 dans les départements où l'on crée le moins à 6,5 dans ceux où l'on crée le plus. Les variables de contexte montrent aussi de gros écarts entre départements. Le revenu médian va de 19 000 à 29 700 € par an. Le taux de pauvreté passe du simple au triple, de 9 % à 28 %. L'indice de Gini, qui mesure les inégalités, reste plus resserré (0,23 à 0,45), tout comme la part des personnes âgées (6 % à 16 %) et celle des jeunes (18 % à 28 %).
+
+En résumé, la variable à expliquer est très inégalement répartie et marquée par quelques valeurs hautes, tandis que les variables de contexte dessinent déjà une opposition entre territoires urbains, jeunes et aisés d'un côté, et territoires ruraux, âgés et plus pauvres de l'autre.
+
+# 2. Analyse exploratoire spatiale (ESDA)
+
+## 2.1) Carte de performance territoriale
+Les départements où l'on crée le plus d'entreprises de commerce sont surtout au sud et sur les côtes. Tout le pourtour méditerranéen ressort en foncé (des Pyrénées-Orientales jusqu'aux Alpes-Maritimes, en passant par les Bouches-du-Rhône et le Var), ainsi que la côte du Sud-Ouest (Landes, Pyrénées-Atlantiques) et la Corse. La région parisienne se détache aussi nettement au centre-nord.
+
+À l'inverse, les départements où l'on crée le moins d'entreprise de commerce se trouve sur tout le massif central et sa périphérie (Creuse, Cantal, Lozère, Indre, Allier)
+qui sont des zones rurales et peu peuplées. Une partie de l'Ouest, comme la Bretagne intérieure, est également plus claire.
+forment une grande bande claire au centre du pays : tout le Massif central et sa périphérie (Creuse, Cantal, Lozère, Indre, Allier…), qui sont des zones rurales et peu peuplées. Nous avons également une partie de l'Ouest, comme la Bretagne intérieure qui enrégistre un faible taux de création d'entreprise.
+
+```{r geometrie,echo=FALSE,comment=NA,warning=FALSE}
+URL_GEO = "https://raw.githubusercontent.com/gregoiredavid/france-geojson/master/departements-version-simplifiee.geojson"
+dep_geo = st_read(URL_GEO, quiet = TRUE) |>
+  st_transform(2154) |>
+  filter(!str_starts(code, "97")) |>
+  rename(code_dep = code)
+
+carte = dep_geo |> 
+  left_join(base, by = "code_dep")
+```
+
+```{r,fig.align='center',fig.width=8,fig.height=4,echo=FALSE,comment=NA}
+tm_shape(carte) +
+  tm_polygons("taux_creation",style = "quantile", n = 5, 
+              palette = "OrRd",border.col = "white", lwd = 0.3,
+              title = "Taux de création") +
+  tm_layout(main.title = "Figure 1 : Taux de création d'entreprises de commerce par département (2024)",main.title.size = 1,legend.outside = TRUE)
+```
+
+## 2.2) Analyse de l'hétérogénéité : distributions par type de territoire
+
+```{r,warning=FALSE,comment=NA,echo=FALSE}
+carte$densite_pop = carte$population / (as.numeric(st_area(carte)) / 1e6)
+carte$type_terr = ifelse(carte$densite_pop >= median(carte$densite_pop, na.rm = TRUE),"Urbain (dense)", "Rural (peu dense)")
+```
+
+```{r,fig.align='center',warning=FALSE,comment=NA,echo=FALSE}
+ggplot(carte, aes(type_terr, taux_creation, fill = type_terr)) +
+  geom_violin(alpha = 0.6, color = NA, trim = FALSE, width = 0.5) +
+  geom_boxplot(width = 0.06, fill = "white", outlier.size = 0.6) +
+  scale_fill_manual(values = c("Rural (peu dense)" = "#78c679","Urbain (dense)" = "#f03b20")) +
+  labs(title = "Figure 2 : Créations d'entreprises de commerce selon le type de territoire",x = NULL, y = "Créations / 1000 hab.") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none",plot.title = element_text(size = 12))
+```
+
+La figure 2 compare le taux de création entre départements ruraux (peu denses) et urbains (denses). Nous constatons que les départements urbains créent davantage d'entreprises de commerce pour 1 000 habitants. Leur médiane se situe autour de 2,1, contre environ 1,8 pour les départements ruraux. Les départements ruraux sont très regroupés autour de leur médiane, ils se ressemblent tous, avec peu de valeurs extrêmes. Les départements urbains sont plus étalés, et on trouve parmi un département qui monte jusqu'à 6,5 créations pour 1 000 habitants, très au-dessus des autres.
+
+
+## 2.2) Indice de Moran et LISA : identification des clusters de haute et basse performance
+
+### Indice de Moran 
+
+L'indice de Moran se base sur la matrice de voisinage. Ainsi, nous partons de la création de matrice de poids spatiales calculé grâce à la matrice de contiguitée basée sur la méthode Queen. Les liens de voisinage sont ensuite représentés graphiquement sur une carte.
+```{r,echo = FALSE, message = FALSE, warning = FALSE, comment = NA,fig.align = "center"}
+cent = st_centroid(st_geometry(carte))
+coords = st_coordinates(cent)
+mapC.nb = poly2nb(carte, queen = TRUE)
+# lignes de voisinage directement en sf, avec le bon CRS
+liens = nb2lines(mapC.nb, coords = coords, proj4string = st_crs(carte), as_sf = TRUE)
+tmap_mode("plot")
+tm_shape(carte) +
+  tm_polygons(col = "white", border.col = "grey25") +
+  tm_shape(cent) + tm_dots(size = .2,col="red") +
+  tm_shape(liens) + tm_lines(col = "red", lwd = 0.3) +
+  tm_layout(title = "Voisins contigus (Queen)",title.position = c("left", "top"), scale = 0.7)
+```
+Avant de faire le test de Moran, on peut le visualiser avec le nuage de Moran qui suit :
+
+```{r,echo = FALSE, message = FALSE, warning = FALSE, comment = NA,fig.align = "center"}
+listw <- nb2listw(mapC.nb, style = "W", zero.policy = TRUE)
+# valeur et moyenne des voisins
+carte$voisins = lag.listw(listw, carte$taux_creation, zero.policy = TRUE)
+mx = mean(carte$taux_creation); my <- mean(carte$voisins)
+moran_i = moran.test(carte$taux_creation, listw, zero.policy = TRUE)$estimate[1]
+
+carte$influent = with(carte,abs(taux_creation - mx) > 1.5 * sd(taux_creation) | abs(voisins - my) > 1.5 * sd(carte$voisins))
+
+ggplot(carte, aes(taux_creation, voisins)) +
+  geom_vline(xintercept = mx, color = "grey70", linetype = "dashed") +
+  geom_hline(yintercept = my, color = "grey70", linetype = "dashed") +
+  geom_point(color = "#f03b20", alpha = 0.7, size = 2) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 0.8) +
+  geom_text_repel(data = subset(carte, influent),aes(label = nom_dep), size = 3, color = "grey20",max.overlaps = 20) +
+  annotate("text", x = max(carte$taux_creation)*0.85,y = min(carte$voisins),label = paste("Moran I =", round(moran_i, 3)),fontface = "bold", size = 4.5) +
+  labs(title = "Nuage de Moran",x = "Taux de création du département",y = "Taux de création moyen des voisins") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold", size = 13))
+```
+```{r,test de moran,echo = FALSE, message = FALSE, warning = FALSE,comment=NA}
+moran.test(carte$taux_creation, listw, zero.policy = TRUE)
+```
+L'indice de Moran vaut 0,35, avec une p-value inférieure au seuil de 5 %. On rejette donc l'hypothèse d'une répartition au hasard : la création d'entreprises de commerce est bel et bien structurée. Un département qui crée beaucoup a tendance à être entouré de départements qui créent beaucoup, et inversement pour ceux qui créent peu. La valeur positive (0,35) confirme qu'il existe une ressemblance nette entre départements voisins, une autocorrélation spatiale positive.
+
+### LISA 
+
+```{r,LISA,echo = FALSE, message = FALSE, warning = FALSE,comment=NA,fig.align='center'}
+# LISA : indice de Moran local
+lmoran = localmoran(carte$taux_creation, listw, zero.policy = TRUE)
+carte$pval = lmoran[, ncol(lmoran)]
+
+moy = mean(carte$taux_creation)
+carte$voisins = lag.listw(listw, carte$taux_creation, zero.policy = TRUE)
+
+# seuil à 0.10 ; les p-value manquantes sont traitées comme non significatives
+s = !is.na(carte$pval) & carte$pval <= 0.10
+
+carte$lisa = "Non significatif"
+carte$lisa[s & carte$taux_creation >= moy & carte$voisins >= moy] = "Haut-Haut"
+carte$lisa[s & carte$taux_creation <= moy & carte$voisins <= moy] = "Bas-Bas"
+carte$lisa[s & carte$taux_creation >= moy & carte$voisins <= moy] = "Haut-Bas"
+carte$lisa[s & carte$taux_creation <= moy & carte$voisins >= moy] = "Bas-Haut"
+carte$lisa = factor(carte$lisa,
+                    levels = c("Haut-Haut","Bas-Bas","Haut-Bas","Bas-Haut","Non significatif"))
+
+# carte
+tm_shape(carte) +
+  tm_polygons("lisa",palette = c("Haut-Haut"="#bd0026","Bas-Bas"="#2c7bb6","Haut-Bas"="#feb24c","Bas-Haut"="#addd8e","Non significatif"="#f0f0f0"),
+              border.col = "white", lwd = 0.3, title = "Clusters LISA",
+              showNA = FALSE, textNA = "", drop.levels = TRUE) +
+  tm_layout(main.title = "Clusters de création d'entreprises (LISA)",main.title.size = 1, legend.outside = TRUE, frame = FALSE)
+```
+Au seuil de 10 %, la LISA fait apparaître des regroupements plus nets. Deux zones Haut-Haut (rouge) ressortent : le pourtour méditerranéen (Hérault, Gard, Vaucluse, Bouches-du-Rhône) et la région parisienne des départements qui créent beaucoup, entourés de départements qui créent beaucoup. Ce sont les deux grands pôles de création d'entreprises de commerce.
+À l'opposé, plusieurs zones Bas-Bas (bleu) apparaissent : un bloc dans l'Ouest (Bretagne, Mayenne, Sarthe) et un autre au centre (autour du Massif central). Ce sont des départements qui créent peu, entourés de départements dans la même situation les zones plutôt rurales.
+Enfin, on note qu'il n'y a pas de département atypique qui détonnerait par rapport à ses voisins.
+
+#### Validation des Clusters LISA
+
+Nous avons construit les clusters avec la matrice contiguïté, ainsi pour vérifier qu'ils sont robuste nous refaisons une LISA avec une autre matrice de voisinage. Cette fois-ci le KNN, l'idée est de regarder si les mêmes zones ressortent
+
+```{r,Robustesse des Clusters,echo = FALSE, message = FALSE, warning = FALSE,comment=NA,fig.align='center'}
+# --- Robustesse des clusters : LISA avec un voisinage différent (kNN) ---
+coords = st_coordinates(st_centroid(st_geometry(carte)))
+listw_knn = nb2listw(knn2nb(knearneigh(coords, k = 5)), style = "W")
+
+lmoran2 = localmoran(carte$taux_creation, listw_knn, zero.policy = TRUE)
+carte$pval2 = lmoran2[, ncol(lmoran2)]
+carte$voisins2 = lag.listw(listw_knn, carte$taux_creation, zero.policy = TRUE)
+
+s2 = !is.na(carte$pval2) & carte$pval2 <= 0.10
+carte$lisa2 = "Non significatif"
+carte$lisa2[s2 & carte$taux_creation >= moy & carte$voisins2 >= moy] = "Haut-Haut"
+carte$lisa2[s2 & carte$taux_creation <= moy & carte$voisins2 <= moy] = "Bas-Bas"
+carte$lisa2[s2 & carte$taux_creation >= moy & carte$voisins2 <= moy] = "Haut-Bas"
+carte$lisa2[s2 & carte$taux_creation <= moy & carte$voisins2 >= moy] = "Bas-Haut"
+carte$lisa2 = factor(carte$lisa2,levels = c("Haut-Haut","Bas-Bas","Haut-Bas","Bas-Haut","Non significatif"))
+
+tm_shape(carte) +
+  tm_polygons("lisa2",
+              palette = c("Haut-Haut"="#bd0026","Bas-Bas"="#2c7bb6",
+                          "Haut-Bas"="#feb24c","Bas-Haut"="#addd8e",
+                          "Non significatif"="#f0f0f0"),
+              border.col = "white", lwd = 0.3, title = "Clusters LISA (kNN)",
+              showNA = FALSE, textNA = "", drop.levels = TRUE) +
+  tm_layout(main.title = "Robustesse des clusters (voisinage kNN = 5)",
+            main.title.size = 0.9, legend.outside = TRUE, frame = FALSE)
+```
+
+L'analyse LISA refaite avec un voisinage par les k plus proches voisins (k = 5) au lieu de la contiguïté nous montre que les résultats sont très proches. On retrouve les mêmes pôles de forte création (pourtour méditerranéen et Île-de-France, en rouge) et les mêmes zones creuses (Bretagne et centre du pays, en bleu). Quelques départements ressortent en plus avec ce voisinage, comme la Corse qui rejoint le cluster de forte création du Sud, ce qui reste cohérent avec la structure d'ensemble ; mais les grands regroupements ne changent pas. La structure spatiale identifiée est donc robuste au choix de la matrice de voisinage.
+
+# 3. Modélisation économétrique spatiale
+## 3.1)  Estimation avec les MCO et tests sur les résidus
+On part tout d'abord d'un modèle de régression des moindres carrées ordinaires qui sera notre modèle de base 
+```{r,warning=FALSE,echo=FALSE,comment=NA}
+f = taux_creation ~ taux_pauvrete + gini + log(densite_pop) + part_seniors
+ols = lm(f, data = carte)
+stargazer(ols,title="Modèle de régression linéaire",align=TRUE, type="text",digits = 3,single.row = TRUE)
+```
+
+Le modèle explique 67 % de la variance du taux de création d'entreprise de commerce. L'indice de Gini a l'effet le plus fort et le plus net (coefficient très positif, significatif à 1 %) : plus un département est inégalitaire, plus il crée d'entreprises de commerce. Ce résultat s'explique par le fait que les départements très inégalitaires sont surtout les grands départements urbains, où l'activité commerciale est intense. La densité de population joue aussi positivement (significative à 5 %) : les territoires denses créent davantage, ce qui confirme le lien entre urbanité et création. Le taux de pauvreté a un effet positif plus modéré mais significatif. En revanche, la part des seniors n'est pas significative : la structure par âge ne semble pas jouer une fois les autres facteurs pris en compte. Une analyse des résidus et une prise en compte des corrélations spatiales pourraient affiner le modèle s'il y en a.
+
+### Test d'hétéroscédasticité de white
+
+Nous allons vérifier si les variances des résidus dans notre modèle OLS sont constantes.
+
+```{r, echo=FALSE,warning=FALSE,comment=NA}
+bptest(ols)
+```
+
+On constate après le test de Breush-Pagan une p-value très faible, indiquant un rejet clair de l'hypothèse d'homoscédasticité au seuil de décision de 5%. 
+
+### Test de multicolinéarité
+
+```{r,warning=FALSE,echo=FALSE,comment=NA}
+car::vif(ols)
+```
+
+Les facteurs d'inflation de la variance (VIF) sont tous inférieurs à 5 (de 1,1 à 4,0), ce qui écarte tout problème de multicolinéarité, les variables explicatives apportent chacune une information distincte.
+
+### Test de Moran d’autocorrélation spatiale
+
+Rappelons les principales hypothèses du test de Moran I :
+
+- H_0 : Les données sont spatialement indépendantes
+
+- H_1 : Les données présentent une autocorrélation spatiale
+
+```{r morantest,warning=FALSE,echo=FALSE,comment=NA}
+lm.morantest(ols, listw, zero.policy = TRUE)
+```
+La p-value, égale à 0,32, est supérieure au seuil de 5 % alors on ne rejette pas l'hypothèse nulle. Les résidus du modèle ne présentent pas d'autocorrélation spatiale significative. Cela signifie que les variables explicatives ont absorbé la structure spatiale initialement observée dans le taux de création : la dépendance entre départements voisins s'explique par leurs caractéristiques socio-économiques communes, et non par un effet de voisinage résiduel.
+
+## 3.2) Estimation des modeles SAR, SEM, et SDM
+
+Le test de Moran sur les résidus ne détecte pas d'autocorrélation spatiale résiduelle, on estime tout de même les principaux modèles d'économétrie spatiale, pour vérifier formellement qu'ils n'apportent pas d'amélioration par rapport à l'OLS.
+
+Pour choisir la spécification adaptée, on suit une procédure de tests emboîtés. On part du modèle linéaire estimés précedemment, puis les tests du multiplicateur de Lagrange (LM) robustes orientent vers le type de dépendance spatiale à retenir (sur la variable, sur l'erreur, ou aucune). La figure suivante résume cette démarche.
+
+```{r,warning=FALSE,echo=FALSE,comment=NA,fig.align='center'}
+DiagrammeR::grViz("
+digraph {
+  graph [rankdir=TB, fontname=Helvetica]
+  node  [shape=box, style=rounded, fontname=Helvetica, fontsize=10]
+  edge  [fontname=Helvetica, fontsize=9, arrowsize=0.7]
+
+  ols  [label='Modèle linéaire\\nY = Xβ + ε', style='rounded,filled', fillcolor='#fff3b0']
+  lmr  [label='LM robuste ρ\\nH0 : ρ = 0']
+  lml  [label='LM robuste λ\\nH0 : λ = 0']
+  sdm1 [label='SDM\\nY = ρWY + Xβ + WXθ + ε']
+  slx  [label='SLX\\nY = Xβ + WXθ + ε', style='rounded,filled', fillcolor='#fff3b0']
+  sdm2 [label='SDM\\nY = ρWY + Xβ + WXθ + ε']
+  sar  [label='SAR\\nY = ρWY + Xβ + ε', style='rounded,filled', fillcolor='#e7f4e4']
+  sem  [label='SEM\\nY = Xβ + u ;  u = λWu + ε', style='rounded,filled', fillcolor='#e7f4e4']
+  lin  [label='Modèle linéaire retenu', style='rounded,filled', fillcolor='#fbb4ae']
+  sdmA [label='SDM', style='rounded,filled', fillcolor='#e7f4e4']
+  sdmB [label='SDM', style='rounded,filled', fillcolor='#e7f4e4']
+
+  ols->lmr;  ols->lml
+  lmr->sdm1 [label='ρ≠0, λ=0']
+  ols->slx  [label='ρ=0, λ=0', color='#d97706', penwidth=2]
+  lml->sdm2 [label='ρ=0, λ≠0']
+  sdm1->sar  [label='θ=0 (LR)'];  sdm1->sdmA [label='θ≠0']
+  slx->lin   [label='θ=0', color='#d97706', penwidth=2];  slx->sdmB [label='θ≠0 (test ρ)']
+  sdm2->sem  [label='facteur commun']; sdm2->sdmB [label='sinon']
+}
+")
+```
+
+```{r,warning=FALSE,echo=FALSE,comment=NA}
+lm.LMtests(ols, listw, test = "all", zero.policy = TRUE)
+```
+
+La procédure de tests confirme qu'aucun modèle spatial n'est adapté à nos données. Les deux tests LM robustes ne sont pas significatifs : ni la dépendance sur la variable ($\rho$, p = 0,65) ni la dépendance sur l'erreur ($\lambda$, p = 0,72) ne ressortent. On se situe donc dans le cas $\rho$ = 0 et $\lambda$ = 0, qui oriente vers le modèle SLX. 
+
+### Estimation du modèle SLX
+
+```{r,warning=FALSE,echo=FALSE,comment=NA}
+slx = lmSLX(f, data = carte, listw = listw, zero.policy = TRUE)
+stargazer(slx, type = "text", align = TRUE, single.row = TRUE,title = "Estimation du modèle SLX")
+```
+L'estimation du modèle SLX montre que les termes spatiaux ne sont pas significatifs au seuil de 5%. Ainsi, Les modèles d'économétrie spatiale (SAR, SEM, SDM, SLX) ne sont pas justifiés ici : ils ne corrigent aucune dépendance. Ce résultat est cohérent avec le test de Moran sur les résidus, qui ne détectait pas d'autocorrélation. La structure spatiale visible dans le taux de création est donc entièrement expliquée par les caractéristiques socio-économiques des départements (densité, inégalités), et non par un effet de voisinage. Le modèle OLS constitue par conséquent la spécification la plus adaptée.
+
+### Comparaison des modèles
+Nous éteignons notre concluion par la comparaison du critère AIC entre les 4 modèles. Il en ressort que le modele OLS est celui avec le plus petit AIC. Tout ceci vient à nouveau confirmer ce qu'on avait deduit.
+```{r,warning=FALSE,echo=FALSE,comment=NA}
+library(spatialreg)
+sar = lagsarlm(f, data = carte, listw = listw, zero.policy = TRUE)
+sem = errorsarlm(f, data = carte, listw = listw, zero.policy = TRUE)
+sdm = lagsarlm(f, data = carte, listw = listw, Durbin = TRUE, zero.policy = TRUE)
+AIC(ols, sar, sem, sdm,slx)
+```
+# 4. La régression géographiquement Pondérée : GWR
+
+## 4.1) Estimation de la régression géographiquement pondérée
+
+Les tests précédents ont écarté toute dépendance spatiale. Le modèle MCO s'applique à l'ensemble des département. La régression géographiquement pondérée (GWR) pose une question différente : les effets des variables sont-ils les mêmes partout, plutôt qu'un seul coefficient par variable, elle en estime un pour chaque département, en donnant plus de poids aux départements proches. On peut ainsi cartographier la façon dont l'influence de chaque facteur varie sur le territoire.
+
+
+```{r,warning=FALSE,echo=FALSE,comment=NA}
+carte_sp = as(carte, "Spatial")  
+# Choix du nombre de voisins autour de chaque point
+bw = bw.gwr(f, data = carte_sp, approach = "AICc",kernel = "bisquare", adaptive = TRUE)
+# Estimation de GWR
+gwr = gwr.basic(f, data = carte_sp, bw = bw,kernel = "bisquare", adaptive = TRUE)
+gwr
+```
+
+La GWR estime un jeu de coefficients pour chaque département. La fenêtre optimale retenue est large (94 voisins), ce qui indique que la variation locale des effets existe mais reste modérée. Le modèle améliore légèrement l'ajustement (R² = 0,71 contre 0,67 pour l'OLS, AIC plus faible). L'examen des coefficients locaux montre surtout que l'effet de l'indice de Gini, principal déterminant, n'est pas uniforme : il varie de 6,7 à 15,0 selon les territoires. L'effet de la densité varie également (de 0,02 à 0,26). Ces écarts confirment que la relation entre contexte socio-économique et création d'entreprises n'est pas la même sur tout le territoire, c'est l'avantage de la GWR.
+
+## 4.2) Cartographie des effets locaux
+
+```{r,fig.width=8,fig.height=6,echo=FALSE,comment=NA,warning=FALSE}
+gwr_sf = st_as_sf(gwr$SDF)
+carte_coef = function(var, titre) {
+  tm_shape(gwr_sf) +
+    tm_polygons(var, style = "quantile", n = 5, palette = "-RdBu",border.col = "white", lwd = 0.3, title = "Coef. local",showNA = FALSE, textNA = "") +
+    tm_layout(main.title = titre, main.title.size = 0.8,legend.outside = FALSE,legend.position = c("left", "bottom"),legend.text.size = 0.45, legend.title.size = 0.55,
+              frame = FALSE)}
+c1 = carte_coef("gini", "Effet du Gini")
+c2 = carte_coef("taux_pauvrete", "Effet du taux de pauvreté")
+c3 = carte_coef("log(densite_pop)", "Effet de la densité")
+c4 = carte_coef("part_seniors", "Effet de la part de seniors")
+
+tmap_arrange(c1, c2, c3, c4, ncol = 2, nrow = 2)
+```
+Les quatre cartes présentent, pour chaque variable, la valeur de son coefficient estimé localement par la GWR, en rouge les départements où l'effet est le plus fort, en bleu ceux où il est le plus faible. On constate que l'effet de chaque variable n'est pas uniforme sur le territoire, et qu'il suit une opposition géographique marquée, souvent entre le Nord-Ouest et le Sud-Est.
+
+L'effet de l'indice de Gini, le plus important en moyenne, est le plus élevé dans l'Ouest et le Nord-Ouest, et plus faible dans le Sud-Est. À l'inverse, l'effet du taux de pauvreté et celui de la densité sont les plus forts dans la moitié Sud du pays et les plus faibles dans le Nord-Ouest. Enfin, la part de seniors est la seule variable dont l'effet change de signe selon les régions (négatif à l'Ouest, positif à l'Est), ce qui explique qu'elle apparaisse non significative au niveau national : ses effets opposés s'annulent. Ces résultats confirment l'hypothèse d'une non-stationnarité spatiale : les mécanismes qui expliquent la création d'entreprises de commerce diffèrent selon les territoires, ce que le modèle global ne pouvait pas révéler.
+
+## 4.3) Interpretation économique 
+
+Les cartes montrent que selon l'endroit où on se trouve en France, ce ne sont pas les mêmes facteurs qui expliquent le mieux la création de commerces. Et ça se voit surtout entre le Nord-Ouest et le Sud-Est.
+
+Dans l'Ouest et le Nord-Ouest, c'est l'indice de Gini qui pèse le plus. Comme il est lié aux inégalités et à la présence de villes, ça veut dire que dans ces régions, la création de commerces dépend surtout du poids des grandes villes et des écarts de revenus. Dans le Sud, ce sont plutôt la densité de population et la pauvreté qui comptent , on crée des commerces là où il y a beaucoup de monde. Quant à la part de personnes âgées, elle joue dans un sens à l'Ouest (plus de seniors, moins de créations) et dans l'autre à l'Est. C'est pour ça qu'au niveau national elle ne ressortait pas les deux effets se compensent.
+
+En clair, un même levier ne marche pas pareil partout. Miser sur les grandes villes sera plus efficace à l'Ouest, alors que dans le Sud, c'est surtout le nombre d'habitants qui fait la différence.
+
+Pour une entreprise qui veut ouvrir des points de vente ou repérer les zones intéressantes, il n'y a pas une seule préconisation valable pour toute la France. Dans le Sud et les zones denses, il faut viser les endroits où la population est concentrée ; dans l'Ouest, s'appuyer plutôt sur les villes. Et de manière générale, ça confirme que le commerce se crée surtout dans les zones urbaines et peuplées; ce qui laisse les campagnes à l'écart, et pose la question de comment les soutenir.
+
+
+# 5. Validation spatiale (Split géographique)
+
+Pour tester la stabilité géographique du modèle, celui-ci a été estimé sur les départements du Nord, puis utilisé pour prédire ceux du Sud. La prédiction reste correcte (R² = 0,54, RMSE = 0,31), mais inférieure à celle du modèle estimé sur l'ensemble (R² = 0,67). Le modèle appris sur une partie du territoire garde donc un pouvoir explicatif sur l'autre, mais avec une perte de précision. Ce résultat confirme celui de la GWR, les relations entre le dynamisme commercial et ses déterminants ne sont pas parfaitement identiques d'une région à l'autre, ce qui justifie une lecture territorialisée plutôt qu'un modèle unique appliqué uniformément.
+
+```{r,echo=FALSE,comment=NA,warning=FALSE}
+# latitude du centroïde pour couper Nord / Sud
+carte$lat = st_coordinates(st_centroid(st_geometry(carte)))[, 2]
+seuil = median(carte$lat)
+
+train = carte[carte$lat >= seuil, ]   # Nord : calibration
+test  = carte[carte$lat <  seuil, ]   # Sud : validation
+
+# modèle estimé sur le Nord
+m_train = lm(f, data = train)
+
+# prédiction sur le Sud + mesure de l'erreur
+pred = predict(m_train, newdata = test)
+rmse = sqrt(mean((test$taux_creation - pred)^2))
+r2   = cor(test$taux_creation, pred)^2
+
+cat("RMSE sur le Sud :", round(rmse, 3),
+    "\nR² sur le Sud   :", round(r2, 3), "\n")
+```
+
+# Conclusion
+On cherchait à comprendre pourquoi certains départements français créent plus d'entreprises de commerce que d'autres, et si ces écarts suivaient une logique géographique. L'analyse a montré que le dynamisme commercial n'est pas réparti au hasard. Il se concentre dans le Sud méditerranéen et en Île-de-France, et reste faible dans l'Ouest rural et le centre du pays. L'indice de Moran a confirmé cette structure spatiale (hypothèse H1 validée).
+En revanche, les modèles d'économétrie spatiale (SAR, SEM, SLX) se sont révélés inutiles ici : une fois prises en compte les caractéristiques des départements, il ne restait plus aucune dépendance spatiale à corriger. La ressemblance entre départements voisins s'explique donc par le fait qu'ils partagent les mêmes caractéristiques (densité, inégalités), et non par un effet d'entraînement entre voisins. Le modèle classique (OLS) reste le mieux adapté, avec l'indice de Gini et la densité comme principaux déterminants.
+La régression géographiquement pondérée est le plus intéressant. Elle a montré que l'effet de ces facteurs change selon les régions (hypothèse H2 validée). Les inégalités pèsent surtout à l'Ouest, la densité et la pauvreté dans le Sud, et la part de personnes âgées joue en sens inverse selon les régions. Le split géographique a confirmé ce constat : un modèle appris sur le Nord prédit correctement le Sud, mais moins bien que le modèle global, signe que les relations ne sont pas tout à fait les mêmes partout. Au final, le dynamisme commercial apparaît avant tout comme un phénomène urbain et social, concentré là où la population est dense et l'activité déjà présente, ce qui laisse les territoires ruraux à l'écart.
+
+Tout notre travail a été mené au niveau du département, mais les résultats pourraient être différents à une échelle plus fine, comme la commune ou l'intercommunalité. C'est le problème des unités spatiales modifiables (MAUP), où le découpage choisi influence les conclusions. Le département reste un bon compromis, car les données y sont complètes et fiables, mais il lisse les différences internes un département « moyen » peut cacher une grande ville dynamique et des campagnes en retrait.
+La deuxième limite concerne l'indicateur lui-même : on mesure la performance commerciale par le nombre de créations d'entreprises, faute de données de chiffre d'affaires ou de rentabilité, qui sont privées. Or une création n'est pas forcément une réussite : on compte des ouvertures, pas des entreprises qui durent. L'indicateur capte donc le dynamisme, pas la solidité du tissu commercial. S'ajoute un décalage de dates : le taux de création est de 2024 alors que les données de revenus et de pauvreté datent de 2021, ce qui suppose que le contexte social n'a pas beaucoup changé entre les deux. Plusieurs variables sont aussi liées entre elles (densité, inégalités, urbanité), si bien qu'il est difficile d'isoler l'effet propre de chacune.
+
+Enfin, il faut rester prudent sur l'interprétation. Les corrélations mises en évidence ne prouvent pas de lien de cause à effet. Le fait qu'un département dense crée plus de commerces ne signifie pas que la densité cause  la création, et d'autres facteurs non mesurés (tourisme, fiscalité locale, dynamisme économique général) jouent sûrement un rôle.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
