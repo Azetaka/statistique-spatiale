@@ -38,49 +38,9 @@ Enfin, on a réuni tous ces fichiers en une seule table, en les reliant par le c
 La base finale compte **96 départements** sans valeur manquante. On note que revenu médian et taux de pauvreté mesurent tous deux la dimension du niveau de vie Ils sont fortement corrélés et  ne seront pas utilisés simultanément dans la modélisation, afin d'éviter la multicolinéarité. Voici un aperçu de la base finale :
 
 ```{r,echo=FALSE,comment=NA,warning=FALSE,include=FALSE}
-F_CREA = here::here("data", "raw", "Creation_Entreprise.xlsx")
-F_POP = here::here("data", "raw", "Population.xlsx")
-F_REV = here::here("data", "raw", "DISP_DEP.csv")
-F_PAUV = here::here("data", "raw", "FILO2021_DISP_PAUVRES_DEP.csv")
-
-# 1. Créations d'entreprises du commerce en 2024 (feuille DEP_UL)
-crea = read_excel(F_CREA, sheet = "DEP_UL", skip = 5, col_names = FALSE)
-names(crea) = c("code_dep","nom_dep","activite","forme_legale", paste0("an_", 2012:2024))
-crea = crea |>
-  filter(str_starts(activite, "Commerce"), forme_legale == "Total") |>
-  transmute(code_dep = as.character(code_dep), nom_dep, creations_commerce = an_2024)
-
-# Population 2024 : total + classes d'âge (bloc "Ensemble")
-pop = read_excel(F_POP, sheet = "2024", skip = 5, col_names = FALSE) |>
-  transmute(code_dep = as.character(...1),
-            pop_0_19 = as.numeric(...3), pop_75p = as.numeric(...7),
-            population = as.numeric(...8))
-
-# Filosofi : revenu médian (Q221) + Gini (GI21) 
-rev = read_delim(F_REV, delim = ";", locale = locale(decimal_mark = ","),
-                  col_select = c(CODGEO, Q221, GI21),
-                  col_types = cols(CODGEO = col_character(), Q221 = col_double(), GI21 = col_double())) |>
-  transmute(code_dep = CODGEO, revenu_median = Q221, gini = GI21)
-
-# --- 4. Filosofi : taux de pauvreté 60 % (TP6021) ---
-pauv = read_delim(F_PAUV, delim = ";", locale = locale(decimal_mark = ","),
-                   col_select = c(CODGEO, TP6021),
-                   col_types = cols(CODGEO = col_character(), TP6021 = col_double())) |>
-  transmute(code_dep = CODGEO, taux_pauvrete = TP6021)
-
-# base finale
-base = crea |>
-  full_join(pop, by = "code_dep") |> full_join(rev, by = "code_dep") |>
-  full_join(pauv, by = "code_dep") |>
-  filter(str_detect(code_dep, "^(\\d{2}|2A|2B)$")) |>
-  mutate(taux_creation = 1000 * creations_commerce / population,
-         part_jeunes  = 100 * pop_0_19 / population,
-         part_seniors = 100 * pop_75p  / population) |>
-  select(code_dep, nom_dep, creations_commerce, population, taux_creation,
-         revenu_median, taux_pauvrete, gini, part_jeunes, part_seniors) |>
-  arrange(code_dep)
-
-stopifnot(nrow(base) == 96, all(!is.na(base$taux_creation)))
+source(here::here("R", "preparation.R"))
+source(here::here("R", "analyse.R"))
+base = construire_base()
 ```
 
 ```{r,echo=FALSE,comment=NA,warning=FALSE}
@@ -111,30 +71,10 @@ qui sont des zones rurales et peu peuplées. Une partie de l'Ouest, comme la Bre
 forment une grande bande claire au centre du pays : tout le Massif central et sa périphérie (Creuse, Cantal, Lozère, Indre, Allier…), qui sont des zones rurales et peu peuplées. Nous avons également une partie de l'Ouest, comme la Bretagne intérieure qui enrégistre un faible taux de création d'entreprise.
 
 ```{r geometrie,echo=FALSE,comment=NA,warning=FALSE}
-URL_GEO = here::here("data", "raw", "departements.geojson")
-dep_geo = st_read(URL_GEO, quiet = TRUE) |>
-  st_transform(2154) |>
-  filter(!str_starts(code, "97")) |>
-  rename(code_dep = code)
-
-carte = dep_geo |> 
-  left_join(base, by = "code_dep")
-```
-
-```{r,fig.align='center',fig.width=8,fig.height=4,echo=FALSE,comment=NA}
-tm_shape(carte) +
-  tm_polygons("taux_creation",style = "quantile", n = 5, 
-              palette = "OrRd",border.col = "white", lwd = 0.3,
-              title = "Taux de création") +
-  tm_layout(main.title = "Figure 1 : Taux de création d'entreprises de commerce par département (2024)",main.title.size = 1,legend.outside = TRUE)
+carte=construire_carte(base)
 ```
 
 ## 2.2) Analyse de l'hétérogénéité : distributions par type de territoire
-
-```{r,warning=FALSE,comment=NA,echo=FALSE}
-carte$densite_pop = carte$population / (as.numeric(st_area(carte)) / 1e6)
-carte$type_terr = ifelse(carte$densite_pop >= median(carte$densite_pop, na.rm = TRUE),"Urbain (dense)", "Rural (peu dense)")
-```
 
 ```{r,fig.align='center',warning=FALSE,comment=NA,echo=FALSE}
 ggplot(carte, aes(type_terr, taux_creation, fill = type_terr)) +
@@ -167,10 +107,11 @@ tm_shape(carte) +
   tm_shape(liens) + tm_lines(col = "red", lwd = 0.3) +
   tm_layout(title = "Voisins contigus (Queen)",title.position = c("left", "top"), scale = 0.7)
 ```
+
 Avant de faire le test de Moran, on peut le visualiser avec le nuage de Moran qui suit :
 
 ```{r,echo = FALSE, message = FALSE, warning = FALSE, comment = NA,fig.align = "center"}
-listw <- nb2listw(mapC.nb, style = "W", zero.policy = TRUE)
+listw = poids_queen(carte)
 # valeur et moyenne des voisins
 carte$voisins = lag.listw(listw, carte$taux_creation, zero.policy = TRUE)
 mx = mean(carte$taux_creation); my <- mean(carte$voisins)
@@ -197,24 +138,7 @@ L'indice de Moran vaut 0,35, avec une p-value inférieure au seuil de 5 %. On re
 ### LISA 
 
 ```{r,LISA,echo = FALSE, message = FALSE, warning = FALSE,comment=NA,fig.align='center'}
-# LISA : indice de Moran local
-lmoran = localmoran(carte$taux_creation, listw, zero.policy = TRUE)
-carte$pval = lmoran[, ncol(lmoran)]
-
-moy = mean(carte$taux_creation)
-carte$voisins = lag.listw(listw, carte$taux_creation, zero.policy = TRUE)
-
-# seuil à 0.10 ; les p-value manquantes sont traitées comme non significatives
-s = !is.na(carte$pval) & carte$pval <= 0.10
-
-carte$lisa = "Non significatif"
-carte$lisa[s & carte$taux_creation >= moy & carte$voisins >= moy] = "Haut-Haut"
-carte$lisa[s & carte$taux_creation <= moy & carte$voisins <= moy] = "Bas-Bas"
-carte$lisa[s & carte$taux_creation >= moy & carte$voisins <= moy] = "Haut-Bas"
-carte$lisa[s & carte$taux_creation <= moy & carte$voisins >= moy] = "Bas-Haut"
-carte$lisa = factor(carte$lisa,
-                    levels = c("Haut-Haut","Bas-Bas","Haut-Bas","Bas-Haut","Non significatif"))
-
+carte$lisa = clusters_lisa(carte, listw)
 # carte
 tm_shape(carte) +
   tm_polygons("lisa",palette = c("Haut-Haut"="#bd0026","Bas-Bas"="#2c7bb6","Haut-Bas"="#feb24c","Bas-Haut"="#addd8e","Non significatif"="#f0f0f0"),
@@ -232,20 +156,8 @@ Nous avons construit les clusters avec la matrice contiguïté, ainsi pour véri
 
 ```{r,Robustesse des Clusters,echo = FALSE, message = FALSE, warning = FALSE,comment=NA,fig.align='center'}
 # --- Robustesse des clusters : LISA avec un voisinage différent (kNN) ---
-coords = st_coordinates(st_centroid(st_geometry(carte)))
-listw_knn = nb2listw(knn2nb(knearneigh(coords, k = 5)), style = "W")
-
-lmoran2 = localmoran(carte$taux_creation, listw_knn, zero.policy = TRUE)
-carte$pval2 = lmoran2[, ncol(lmoran2)]
-carte$voisins2 = lag.listw(listw_knn, carte$taux_creation, zero.policy = TRUE)
-
-s2 = !is.na(carte$pval2) & carte$pval2 <= 0.10
-carte$lisa2 = "Non significatif"
-carte$lisa2[s2 & carte$taux_creation >= moy & carte$voisins2 >= moy] = "Haut-Haut"
-carte$lisa2[s2 & carte$taux_creation <= moy & carte$voisins2 <= moy] = "Bas-Bas"
-carte$lisa2[s2 & carte$taux_creation >= moy & carte$voisins2 <= moy] = "Haut-Bas"
-carte$lisa2[s2 & carte$taux_creation <= moy & carte$voisins2 >= moy] = "Bas-Haut"
-carte$lisa2 = factor(carte$lisa2,levels = c("Haut-Haut","Bas-Bas","Haut-Bas","Bas-Haut","Non significatif"))
+listw_knn = poids_knn(carte, k = 5)
+carte$lisa2 = clusters_lisa(carte, listw_knn)
 
 tm_shape(carte) +
   tm_polygons("lisa2",
@@ -264,7 +176,6 @@ L'analyse LISA refaite avec un voisinage par les k plus proches voisins (k = 5) 
 ## 3.1)  Estimation avec les MCO et tests sur les résidus
 On part tout d'abord d'un modèle de régression des moindres carrées ordinaires qui sera notre modèle de base 
 ```{r,warning=FALSE,echo=FALSE,comment=NA}
-f = taux_creation ~ taux_pauvrete + gini + log(densite_pop) + part_seniors
 ols = lm(f, data = carte)
 stargazer(ols,title="Modèle de régression linéaire",align=TRUE, type="text",digits = 3,single.row = TRUE)
 ```
@@ -361,6 +272,7 @@ sem = errorsarlm(f, data = carte, listw = listw, zero.policy = TRUE)
 sdm = lagsarlm(f, data = carte, listw = listw, Durbin = TRUE, zero.policy = TRUE)
 AIC(ols, sar, sem, sdm,slx)
 ```
+
 # 4. La régression géographiquement Pondérée : GWR
 
 ## 4.1) Estimation de la régression géographiquement pondérée
@@ -369,11 +281,7 @@ Les tests précédents ont écarté toute dépendance spatiale. Le modèle MCO s
 
 
 ```{r,warning=FALSE,echo=FALSE,comment=NA}
-carte_sp = as(carte, "Spatial")  
-# Choix du nombre de voisins autour de chaque point
-bw = bw.gwr(f, data = carte_sp, approach = "AICc",kernel = "bisquare", adaptive = TRUE)
-# Estimation de GWR
-gwr = gwr.basic(f, data = carte_sp, bw = bw,kernel = "bisquare", adaptive = TRUE)
+gwr = estimer_gwr(carte)
 gwr
 ```
 
