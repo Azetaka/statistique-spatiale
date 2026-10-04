@@ -18,16 +18,16 @@ Projet réalisé à l'ENSAI dans le cadre du cours d'économétrie spatiale, ave
 
 ## Résultats
 
-**1. Les créations ne sont pas réparties au hasard.** L'indice de Moran vaut 0,35 (p \< 0,001) : un département où l'on crée beaucoup est en général entouré de départements où l'on crée beaucoup. Les clusters LISA font ressortir deux pôles de forte création, l'Île-de-France et la Provence, et deux zones de faible création, dans l'Ouest (Ille-et-Vilaine, Morbihan, Maine-et-Loire) et dans le Massif central (Cantal, Corrèze). Ce résultat tient quand on change la définition du voisinage.
+**1. Les créations ne sont pas réparties au hasard.** L'indice de Moran vaut 0,35 (p < 0,001) : un département où l'on crée beaucoup est en général entouré de départements où l'on crée beaucoup. Les clusters LISA font ressortir deux pôles de forte création, l'Île-de-France et le littoral provençal, et deux zones de faible création, dans l'Ouest (Ille-et-Vilaine, Morbihan, Maine-et-Loire) et dans le Massif central (Cantal, Corrèze). Ce résultat tient quand on change la définition du voisinage.
 
 **2. Quatre variables expliquent les deux tiers des écarts.** La régression par les moindres carrés ordinaires atteint un R² de 0,67.
 
-| Variable                           | Coefficient |  p-value |
-|------------------------------------|------------:|---------:|
-| Indice de Gini                     |        11,7 | \< 0,001 |
-| Taux de pauvreté                   |       0,034 |    0,009 |
-| Densité de population (logarithme) |       0,130 |    0,029 |
-| Part des 75 ans et plus            |       0,016 |    0,520 |
+| Variable | Coefficient | p-value |
+|---|---:|---:|
+| Indice de Gini | 11,7 | < 0,001 |
+| Taux de pauvreté | 0,034 | 0,009 |
+| Densité de population (logarithme) | 0,130 | 0,029 |
+| Part des 75 ans et plus | 0,016 | 0,520 |
 
 Les départements les plus inégalitaires et les plus denses, c'est-à-dire les grands départements urbains, sont ceux où l'on crée le plus.
 
@@ -50,7 +50,7 @@ Les départements les plus inégalitaires et les plus denses, c'est-à-dire les 
 Toutes les données sont publiques et figurent dans `data/raw/`.
 
 | Fichier | Contenu | Source |
-|------------------------|------------------------|------------------------|
+|---|---|---|
 | `Creation_Entreprise.xlsx` | Créations d'entreprises par département et secteur, 2012 à 2024 | Insee, démographie des entreprises |
 | `Population.xlsx` | Population par département et tranche d'âge, 2024 | Insee, estimations de population |
 | `DISP_DEP.csv` | Revenu médian et indice de Gini, 2021 | Insee, Filosofi |
@@ -59,7 +59,7 @@ Toutes les données sont publiques et figurent dans `data/raw/`.
 
 ## Structure du dépôt
 
-```         
+```
 statistique-spatiale/
 ├── data/
 │   ├── raw/                  # fichiers Insee et fond de carte
@@ -77,7 +77,7 @@ statistique-spatiale/
 
 ## Reproduire l'analyse
 
-``` r
+```r
 # 1. Installer les paquets dans les versions du projet
 renv::restore()
 
