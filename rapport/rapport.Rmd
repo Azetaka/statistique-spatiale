@@ -10,8 +10,6 @@ output:
 ---
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, comment = NA,fig.align = "center")
-getwd()
-setwd("/Users/urielfagninou/Documents/ENSAI/Statistique Spatiale/Projet")
 pacman::p_load(readxl,dplyr,tidyverse,readr,ggplot2,scales,stringr, ggplot2, sf, spdep, tmap, RColorBrewer,stargazer,ggrepel,spatialreg,DiagrammeR,lmtest,GWmodel)
 ```
 
@@ -40,10 +38,10 @@ Enfin, on a réuni tous ces fichiers en une seule table, en les reliant par le c
 La base finale compte **96 départements** sans valeur manquante. On note que revenu médian et taux de pauvreté mesurent tous deux la dimension du niveau de vie Ils sont fortement corrélés et  ne seront pas utilisés simultanément dans la modélisation, afin d'éviter la multicolinéarité. Voici un aperçu de la base finale :
 
 ```{r,echo=FALSE,comment=NA,warning=FALSE,include=FALSE}
-F_CREA = "Creation_Entreprise.xlsx"; 
-F_POP = "Population.xlsx"
-F_REV = "DISP_DEP.csv";    
-F_PAUV = "FILO2021_DISP_PAUVRES_DEP.csv"
+F_CREA = here::here("data", "raw", "Creation_Entreprise.xlsx")
+F_POP = here::here("data", "raw", "Population.xlsx")
+F_REV = here::here("data", "raw", "DISP_DEP.csv")
+F_PAUV = here::here("data", "raw", "FILO2021_DISP_PAUVRES_DEP.csv")
 
 # 1. Créations d'entreprises du commerce en 2024 (feuille DEP_UL)
 crea = read_excel(F_CREA, sheet = "DEP_UL", skip = 5, col_names = FALSE)
@@ -113,7 +111,7 @@ qui sont des zones rurales et peu peuplées. Une partie de l'Ouest, comme la Bre
 forment une grande bande claire au centre du pays : tout le Massif central et sa périphérie (Creuse, Cantal, Lozère, Indre, Allier…), qui sont des zones rurales et peu peuplées. Nous avons également une partie de l'Ouest, comme la Bretagne intérieure qui enrégistre un faible taux de création d'entreprise.
 
 ```{r geometrie,echo=FALSE,comment=NA,warning=FALSE}
-URL_GEO = "https://raw.githubusercontent.com/gregoiredavid/france-geojson/master/departements-version-simplifiee.geojson"
+URL_GEO = here::here("data", "raw", "departements.geojson")
 dep_geo = st_read(URL_GEO, quiet = TRUE) |>
   st_transform(2154) |>
   filter(!str_starts(code, "97")) |>
