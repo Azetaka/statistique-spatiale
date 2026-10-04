@@ -146,8 +146,10 @@ tm_shape(carte) +
               showNA = FALSE, textNA = "", drop.levels = TRUE) +
   tm_layout(main.title = "Clusters de création d'entreprises (LISA)",main.title.size = 1, legend.outside = TRUE, frame = FALSE)
 ```
-Au seuil de 10 %, la LISA fait apparaître des regroupements plus nets. Deux zones Haut-Haut (rouge) ressortent : le pourtour méditerranéen (Hérault, Gard, Vaucluse, Bouches-du-Rhône) et la région parisienne des départements qui créent beaucoup, entourés de départements qui créent beaucoup. Ce sont les deux grands pôles de création d'entreprises de commerce.
-À l'opposé, plusieurs zones Bas-Bas (bleu) apparaissent : un bloc dans l'Ouest (Bretagne, Mayenne, Sarthe) et un autre au centre (autour du Massif central). Ce sont des départements qui créent peu, entourés de départements dans la même situation les zones plutôt rurales.
+Au seuil de 10 %, la LISA fait apparaître des regroupements plus nets. Deux zones Haut-Haut (rouge) ressortent : la Provence (Bouches-du-Rhône, Var, Alpes-de-Haute-Provence) et la région parisienne (Paris, Hauts-de-Seine, Seine-Saint-Denis, Val-de-Marne, Seine-et-Marne). Ce sont des départements qui créent beaucoup, entourés de départements qui créent beaucoup : les deux grands pôles de création d'entreprises de commerce.
+
+À l'opposé, deux zones Bas-Bas (bleu) apparaissent : un bloc dans l'Ouest (Morbihan, Ille-et-Vilaine, Maine-et-Loire) et un autre dans le Massif central (Corrèze, Cantal). Ce sont des départements qui créent peu, entourés de départements dans la même situation, dans des zones plutôt rurales.
+
 Enfin, on note qu'il n'y a pas de département atypique qui détonnerait par rapport à ses voisins.
 
 #### Validation des Clusters LISA
@@ -182,7 +184,7 @@ stargazer(ols,title="Modèle de régression linéaire",align=TRUE, type="text",d
 
 Le modèle explique 67 % de la variance du taux de création d'entreprise de commerce. L'indice de Gini a l'effet le plus fort et le plus net (coefficient très positif, significatif à 1 %) : plus un département est inégalitaire, plus il crée d'entreprises de commerce. Ce résultat s'explique par le fait que les départements très inégalitaires sont surtout les grands départements urbains, où l'activité commerciale est intense. La densité de population joue aussi positivement (significative à 5 %) : les territoires denses créent davantage, ce qui confirme le lien entre urbanité et création. Le taux de pauvreté a un effet positif plus modéré mais significatif. En revanche, la part des seniors n'est pas significative : la structure par âge ne semble pas jouer une fois les autres facteurs pris en compte. Une analyse des résidus et une prise en compte des corrélations spatiales pourraient affiner le modèle s'il y en a.
 
-### Test d'hétéroscédasticité de white
+### Test d'hétéroscédasticité de Breush-Pagan
 
 Nous allons vérifier si les variances des résidus dans notre modèle OLS sont constantes.
 

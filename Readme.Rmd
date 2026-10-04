@@ -18,7 +18,7 @@ Projet réalisé à l'ENSAI dans le cadre du cours d'économétrie spatiale, ave
 
 ## Résultats
 
-**1. Les créations ne sont pas réparties au hasard.** L'indice de Moran vaut 0,35 (p \< 0,001) : un département où l'on crée beaucoup est en général entouré de départements où l'on crée beaucoup. Les clusters LISA font ressortir deux pôles de forte création, l'Île-de-France et le littoral provençal, et deux zones de faible création, dans l'Ouest (Ille-et-Vilaine, Morbihan, Maine-et-Loire) et dans le Massif central (Cantal, Corrèze). Ce résultat tient quand on change la définition du voisinage.
+**1. Les créations ne sont pas réparties au hasard.** L'indice de Moran vaut 0,35 (p \< 0,001) : un département où l'on crée beaucoup est en général entouré de départements où l'on crée beaucoup. Les clusters LISA font ressortir deux pôles de forte création, l'Île-de-France et la Provence, et deux zones de faible création, dans l'Ouest (Ille-et-Vilaine, Morbihan, Maine-et-Loire) et dans le Massif central (Cantal, Corrèze). Ce résultat tient quand on change la définition du voisinage.
 
 **2. Quatre variables expliquent les deux tiers des écarts.** La régression par les moindres carrés ordinaires atteint un R² de 0,67.
 
@@ -50,7 +50,7 @@ Les départements les plus inégalitaires et les plus denses, c'est-à-dire les 
 Toutes les données sont publiques et figurent dans `data/raw/`.
 
 | Fichier | Contenu | Source |
-|----|----|----|
+|------------------------|------------------------|------------------------|
 | `Creation_Entreprise.xlsx` | Créations d'entreprises par département et secteur, 2012 à 2024 | Insee, démographie des entreprises |
 | `Population.xlsx` | Population par département et tranche d'âge, 2024 | Insee, estimations de population |
 | `DISP_DEP.csv` | Revenu médian et indice de Gini, 2021 | Insee, Filosofi |
